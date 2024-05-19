@@ -1,6 +1,9 @@
 package serializer
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // AppError 应用错误，实现了error接口
 type AppError struct {
@@ -35,12 +38,19 @@ func (err *AppError) WithError(raw error) AppError {
 
 // Error 返回业务代码确定的可读错误信息
 func (err AppError) Error() string {
-	if err.Msg == `` {
-		if e, ok := CodeMap[err.Code]; ok {
-			err.Msg = e
-		}
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(err.Code))
+	b.WriteByte('[')
+	if e, ok := CodeMap[err.Code]; ok {
+		b.WriteString(e)
+	} else {
+		b.WriteString(`未定义`)
 	}
-	return strconv.Itoa(err.Code) + `: ` + err.Msg
+	b.WriteByte(']')
+	b.WriteByte(':')
+	b.WriteByte(' ')
+	b.WriteString(err.Msg)
+	return b.String() // code[map]: msg
 }
 
 // 三位数错误编码为复用http原本含义

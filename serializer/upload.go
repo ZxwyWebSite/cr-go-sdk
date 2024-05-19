@@ -13,7 +13,7 @@ package serializer
 // UploadCredential 返回给客户端的上传凭证
 type UploadCredential struct {
 	SessionID   string   `json:"sessionID"`
-	ChunkSize   uint64   `json:"chunkSize"` // 分块大小，0 为部分快
+	ChunkSize   uint64   `json:"chunkSize"` // 分块大小，0 为不分块
 	Expires     int64    `json:"expires"`   // 上传凭证过期时间， Unix 时间戳
 	UploadURLs  []string `json:"uploadURLs,omitempty"`
 	Credential  string   `json:"credential,omitempty"`

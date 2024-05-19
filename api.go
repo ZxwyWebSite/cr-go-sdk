@@ -702,23 +702,24 @@ func (c *SiteObj) UserSetting2FA() (*string, error) {
 
 // ↑ 上传 ↓
 
-// 文件上传 (本地) [会话id,分片数,文件,类型] [错误]
-func (c *SiteObj) FileUploadPut(sid, index string, file []byte, mime string) error {
+// 文件上传 (本地) [会话id,分片数,文件,大小,类型] [错误]
+func (c *SiteObj) FileUploadPut(sid string, index int, file io.Reader, size uint64, mime string) error {
 	var b strings.Builder
 	b.WriteString(c.Addr)
 	b.WriteString(`api/v3/`)
 	b.WriteString(`file/upload/`)
 	b.WriteString(sid)
 	b.WriteByte('/')
-	b.WriteString(index)
+	b.WriteString(strconv.Itoa(index))
 	var out serializer.Response[struct{}]
 	// inline
-	req, err := http.NewRequest(http.MethodPost, b.String(), bytes.NewReader(file))
+	req, err := http.NewRequest(http.MethodPost, b.String(), file)
 	if err != nil {
 		return err
 	}
 	req.Header[`User-Agent`] = []string{Cr_UserAgent}
-	req.Header[`Content-Length`] = []string{strconv.Itoa(len(file))}
+	req.ContentLength = int64(size)
+	// req.Header[`Content-Length`] = []string{strconv.FormatUint(size, 10)}
 	req.Header[`Content-Type`] = []string{mime}
 	// req.Header.Set(`Cookie`, c.Users.Sess)
 	req.Header[`Cookie`] = []string{c.Users.Cookie.String()}

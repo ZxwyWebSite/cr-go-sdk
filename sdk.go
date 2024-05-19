@@ -9,17 +9,18 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/ZxwyWebSite/cr-go-sdk/pkg/json"
 	"github.com/ZxwyWebSite/cr-go-sdk/serializer"
-	"github.com/ZxwyWebSite/cr-go-sdk/service/explorer"
 	"github.com/ZxwyWebSite/cr-go-sdk/service/user"
 )
 
 // (SDK) 初始化站点数据 [] [错误]
 func (c *SiteObj) SdkInit() error {
+	if Cr_Debug {
+		println(`[sdk-debug] Cr_Debug is enabled, set cr.Cr_Debug=false to disable it`)
+	}
 	// 注：调用SiteConfig似乎可以刷新Cookie过期时间
 	config, err := c.SiteConfig()
 	if err == nil {
@@ -95,7 +96,20 @@ func (c *SiteObj) SdkUpload(dir string, file *os.File, name string) error {
 	if err != nil {
 		return err
 	}
-	list, err := c.Directory(dir)
+	task := &UploadTask{
+		Site:    c,
+		File:    file,
+		Size:    size,
+		Name:    name,
+		Mime:    mime,
+		ModTime: info.ModTime().UnixMilli(),
+	}
+	if Cr_Debug {
+		s, _ := json.MarshalIndent(task, ``, `    `)
+		println(string(s))
+	}
+	return task.Do(dir)
+	/*list, err := c.Directory(dir)
 	if err != nil {
 		return err
 	}
@@ -286,7 +300,7 @@ func (c *SiteObj) SdkUpload(dir string, file *os.File, name string) error {
 	default:
 		return errors.New(`不支持的存储策略类型`)
 	}
-	return nil
+	return nil*/
 }
 
 // (SDK) 识别验证码 (仅支持默认版) [] [结果,错误]
@@ -320,7 +334,7 @@ func (c *SiteObj) SdkSolveCaptcha() (*string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, `https://api.nn.ci/ocr/file/json`, buf)
+	req, err := http.NewRequest(http.MethodPost, Cr_OcrApi, buf)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +375,7 @@ func (c *SiteObj) SdkLogin() error {
 			return errors.New(`暂不支持该类型验证码: ` + c.Config.CaptchaType)
 		}
 		var err error
-		for i := 0; i < 5; i++ {
+		for i := 0; i < Cr_OcrRetry; i++ {
 			var result *string
 			result, err = c.SdkSolveCaptcha()
 			if err != nil {

@@ -45,17 +45,19 @@ func SizeToString(bytes uint64) string {
 //go:linkname readSetCookies net/http.readSetCookies
 func readSetCookies(h http.Header) []*http.Cookie
 
-/*func ParseCookies(strs ...string) []*http.Cookie {
+func ParseCookies(strs ...string) []*http.Cookie {
 	return readSetCookies(http.Header{
 		`Set-Cookie`: strs,
 	})
-}*/
+}
 
 // 格式化Cookie字符串
 func ParseCookie(str string) *http.Cookie {
-	return readSetCookies(http.Header{
-		`Set-Cookie`: []string{str},
-	})[0]
+	out := ParseCookies(str)
+	if len(out) == 0 {
+		return nil
+	}
+	return out[0]
 }
 
 // 生成文件列表
@@ -68,3 +70,13 @@ func GenerateSrc(isDir bool, ids ...string) *explorer.ItemIDService {
 	}
 	return &list
 }
+
+// 根据名称查找文件id
+/*func GetIdByName(objs []serializer.Object, name string) string {
+	for _, v := range objs {
+		if v.Name == name {
+			return v.ID
+		}
+	}
+	return ``
+}*/

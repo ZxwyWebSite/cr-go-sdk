@@ -53,6 +53,15 @@ const help = `欢迎使用crsh - cr-go-sdk 演示程序
   ??? - 敬请期待
 `
 
+// 相对目录
+func cdpath(p string) string {
+	if stdpath.IsAbs(p) {
+		return stdpath.Clean(p)
+	} else {
+		return stdpath.Join(path, p)
+	}
+}
+
 // 指令列表
 var cmds = map[string]func(args ...string) error{
 	// 显示帮助
@@ -153,8 +162,8 @@ var cmds = map[string]func(args ...string) error{
 			return errors.New(`参数不足`)
 		}
 		site.Users = &cr.UserObj{
-			Mail: args[1],
-			Pass: args[2],
+			Mail: args[0],
+			Pass: args[1],
 		}
 		return nil
 	},
@@ -195,7 +204,7 @@ var cmds = map[string]func(args ...string) error{
 		}
 		var dir string = path
 		if len(args) >= 1 {
-			dir = stdpath.Join(args[0])
+			dir = cdpath(args[0])
 		}
 		list, err := site.Directory(dir)
 		if err != nil {
@@ -224,7 +233,11 @@ var cmds = map[string]func(args ...string) error{
 		if err != nil {
 			return err
 		}
-		println(*link)
+		if (*link)[0] == '/' {
+			println(site.Addr + (*link)[1:])
+		} else {
+			println(*link)
+		}
 		return nil
 	},
 	// 获取直链
@@ -314,6 +327,20 @@ var cmds = map[string]func(args ...string) error{
 		}
 		err = site.SdkUpload(args[1], file, name)
 		file.Close()
+		return err
+	},
+	// 容量配额
+	`df`: func(args ...string) error {
+		us, err := site.UserStorage()
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Printf(
+			"Used: %v / Free: %v / Total: %v\n",
+			cr.SizeToString(us.Used),
+			cr.SizeToString(us.Free),
+			cr.SizeToString(us.Total),
+		)
 		return err
 	},
 }
