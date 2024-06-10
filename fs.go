@@ -59,16 +59,11 @@ func (f *FSFile) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if (*link)[0] == '/' {
-			*link = f.site.Addr + (*link)[1:]
-		}
-		req, err := http.NewRequest(http.MethodGet, *link, nil)
+		req, err := f.site.newRequest(http.MethodGet, *link, nil, false)
 		if err != nil {
 			return 0, err
 		}
-		req.Header[`User-Agent`] = []string{Cr_UserAgent}
-		req.Header[`Accept`] = []string{Cr_Accept}
-		res, err := http.DefaultClient.Do(req)
+		res, err := Cr_Client.Do(req)
 		if err != nil {
 			return 0, err
 		}

@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ZxwyWebSite/cr-go-sdk/pkg/json"
+	json "github.com/ZxwyProject/zson"
 	"github.com/ZxwyWebSite/cr-go-sdk/serializer"
 	"github.com/ZxwyWebSite/cr-go-sdk/service/user"
 )
@@ -19,7 +19,7 @@ import (
 // (SDK) 初始化站点数据 [] [错误]
 func (c *SiteObj) SdkInit() error {
 	if Cr_Debug {
-		println(`[sdk-debug] Cr_Debug is enabled, set cr.Cr_Debug=false to disable it`)
+		Cr_Format(`[sdk-debug] Cr_Debug is enabled, set cr.Cr_Debug=false to disable it`)
 	}
 	// 注：调用SiteConfig似乎可以刷新Cookie过期时间
 	config, err := c.SiteConfig()
@@ -106,7 +106,7 @@ func (c *SiteObj) SdkUpload(dir string, file *os.File, name string) error {
 	}
 	if Cr_Debug {
 		s, _ := json.MarshalIndent(task, ``, `    `)
-		println(string(s))
+		Cr_Format(string(s))
 	}
 	return task.Do(dir)
 	/*list, err := c.Directory(dir)
@@ -334,14 +334,12 @@ func (c *SiteObj) SdkSolveCaptcha() (*string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, Cr_OcrApi, buf)
+	req, err := c.newRequest(http.MethodPost, Cr_OcrApi, buf, false)
 	if err != nil {
 		return nil, err
 	}
 	req.Header[`Content-Type`] = []string{mw.FormDataContentType()}
-	req.Header[`User-Agent`] = []string{Cr_UserAgent}
-	req.Header[`Accept`] = []string{Cr_Accept}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Cr_Client.Do(req)
 	if err != nil {
 		return nil, err
 	}

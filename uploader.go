@@ -8,10 +8,36 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ZxwyWebSite/cr-go-sdk/pkg/json"
+	json "github.com/ZxwyProject/zson"
 	"github.com/ZxwyWebSite/cr-go-sdk/serializer"
 	"github.com/ZxwyWebSite/cr-go-sdk/service/explorer"
 )
+
+// io.LimitedReader with callback
+type uploadReader struct {
+	R io.Reader
+	N uint64
+	C func(n int, e error)
+}
+
+func (l *uploadReader) Read(p []byte) (n int, err error) {
+	if l.N == 0 {
+		l.C(0, io.EOF)
+		return 0, io.EOF
+	}
+	if uint64(len(p)) > l.N {
+		p = p[0:l.N]
+	}
+	n, err = l.R.Read(p)
+	// 防止 uint 被减到负数溢出?
+	if uint64(n) >= l.N {
+		l.N = 0
+	} else {
+		l.N -= uint64(n)
+	}
+	l.C(n, err)
+	return
+}
 
 type UploadTask struct {
 	Site    *SiteObj
@@ -22,6 +48,9 @@ type UploadTask struct {
 	Sess    *serializer.UploadCredential
 	Policy  *serializer.PolicySummary
 	ModTime int64 // 创建时间 (UnixMilli)
+
+	Chunks   []uint64                        // 预切片大小
+	Callback func(chunk int, n int, e error) // 进度回调
 }
 
 // 本机存储
@@ -39,65 +68,87 @@ func (c *UploadTask) local() error {
 			byteSize = left
 		}
 		err = c.Site.FileUploadPut(
-			c.Sess.SessionID, chunk, &io.LimitedReader{R: c.File, N: int64(byteSize)}, byteSize, c.Mime,
+			c.Sess.SessionID, chunk, &uploadReader{R: c.File, N: byteSize, C: func(n int, e error) {
+				c.Callback(chunk, n, e)
+			}}, byteSize, c.Mime,
 		)
 		if err == nil {
 			try = 0
 			chunk++
 			finish += byteSize
 		}
+		if s, ok := c.File.(io.ReadSeeker); ok {
+			_, err = s.Seek(int64(finish), io.SeekStart)
+			if err != nil {
+				break
+			}
+		} else {
+			// 不重置Reader无法重试
+			break
+		}
 	}
 	return err
 }
 
+/*func (c *UploadTask) localsync() error {
+	return nil
+}*/
+
 // 从机存储
 func (c *UploadTask) remote() error {
 	uploadUrl := c.Sess.UploadURLs[0]
-	var chunk int
-	var oerr error
-	for try := 0; try < 3; try++ {
-		var n int64 = int64(c.Size) - int64(c.Sess.ChunkSize)*int64(chunk)
-		if n <= 0 {
+	for chunk, size := range c.Chunks {
+		var oerr error
+		for try := 0; try < 3; try++ {
+			var b strings.Builder
+			b.WriteString(uploadUrl)
+			b.WriteString(`?chunk=`)
+			b.WriteString(strconv.Itoa(chunk))
+			req, err := c.Site.newRequest(http.MethodPost, b.String(), &uploadReader{c.File, size, func(n int, e error) {
+				c.Callback(chunk, n, e)
+			}}, false)
+			if err != nil {
+				return err
+			}
+			req.Header.Set(`Authorization`, c.Sess.Credential)
+			req.ContentLength = int64(size) // req.Header.Set(`Content-Length`, strconv.FormatUint(n, 10))
+			req.Header.Set(`Content-Type`, `application/octet-stream`)
+			res, err := Cr_Client.Do(req)
+			if err != nil {
+				if s, ok := c.File.(io.ReadSeeker); ok {
+					_, oerr = s.Seek(int64(c.Sess.ChunkSize*uint64(chunk-1)+size), io.SeekStart)
+					if oerr != nil {
+						break
+					}
+				} else {
+					// 不重置Reader无法重试
+					return err
+				}
+				continue
+			}
+			var out serializer.Response[struct{}]
+			if err = json.NewDecoder(res.Body).Decode(&out); err == nil {
+				err = out.Err()
+			}
+			if err != nil {
+				res.Body.Close()
+				return err
+			}
+			res.Body.Close()
+			try = 0
 			break
 		}
-		if n > int64(c.Sess.ChunkSize) {
-			n = int64(c.Sess.ChunkSize)
+		if oerr != nil {
+			return oerr
 		}
-		var b strings.Builder
-		b.WriteString(uploadUrl)
-		b.WriteString(`?chunk=`)
-		b.WriteString(strconv.Itoa(chunk))
-		req, err := http.NewRequest(http.MethodPost, b.String(), io.LimitReader(c.File, n))
-		if err != nil {
-			return err
-		}
-		req.Header.Set(`Authorization`, c.Sess.Credential)
-		req.ContentLength = n
-		// req.Header.Set(`Content-Length`, strconv.FormatUint(n, 10))
-		req.Header.Set(`Content-Type`, `application/octet-stream`)
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			oerr = err
-			continue
-		}
-		var out serializer.Response[struct{}]
-		if err = json.NewDecoder(res.Body).Decode(&out); err == nil {
-			err = out.Err()
-		}
-		if err != nil {
-			res.Body.Close()
-			return err
-		}
-		res.Body.Close()
-		try = 0
-		chunk++
 	}
-	return oerr
+	return nil
 }
 
 // OneDrive
 func (c *UploadTask) onedrive() error {
 	uploadUrl := c.Sess.UploadURLs[0]
+	var chunk int
 	var finish uint64 = 0
 	for finish < c.Size {
 		var byteSize = c.Sess.ChunkSize
@@ -105,7 +156,9 @@ func (c *UploadTask) onedrive() error {
 		if left < c.Sess.ChunkSize {
 			byteSize = left
 		}
-		req, err := http.NewRequest(http.MethodPut, uploadUrl, io.LimitReader(c.File, int64(byteSize)))
+		req, err := c.Site.newRequest(http.MethodPut, uploadUrl, &uploadReader{c.File, byteSize, func(n int, e error) {
+			c.Callback(chunk, n, e)
+		}}, false)
 		if err != nil {
 			return err
 		}
@@ -118,10 +171,9 @@ func (c *UploadTask) onedrive() error {
 		b.WriteByte('/')
 		b.WriteString(strconv.FormatUint(c.Size, 10))
 		req.Header.Set(`Content-Range`, b.String())
-		req.ContentLength = int64(byteSize)
-		// req.Header.Set(`Content-Length`, strconv.FormatUint(byteSize, 10))
+		req.ContentLength = int64(byteSize) // req.Header.Set(`Content-Length`, strconv.FormatUint(byteSize, 10))
 		req.Header.Set(`Content-Type`, `application/octet-stream`)
-		res, err := http.DefaultClient.Do(req)
+		res, err := Cr_Client.Do(req)
 		if err != nil {
 			return err
 		}
@@ -131,6 +183,7 @@ func (c *UploadTask) onedrive() error {
 			return errors.New(string(data))
 		}
 		res.Body.Close()
+		chunk++
 	}
 	return c.Site.CallbackOneDriveFinish(c.Sess.SessionID)
 }
@@ -145,14 +198,15 @@ func (c *UploadTask) s3() error {
 		if left < c.Sess.ChunkSize {
 			byteSize = left
 		}
-		req, err := http.NewRequest(http.MethodPut, uploadUrl, io.LimitReader(c.File, int64(byteSize)))
+		req, err := c.Site.newRequest(http.MethodPut, uploadUrl, &uploadReader{c.File, byteSize, func(n int, e error) {
+			c.Callback(chunk, n, e)
+		}}, false)
 		if err != nil {
 			return err
 		}
-		req.ContentLength = int64(byteSize)
-		// req.Header.Set(`Content-Length`, strconv.FormatUint(byteSize, 10))
+		req.ContentLength = int64(byteSize) // req.Header.Set(`Content-Length`, strconv.FormatUint(byteSize, 10))
 		req.Header.Set(`Content-Type`, `application/octet-stream`)
-		res, err := http.DefaultClient.Do(req)
+		res, err := Cr_Client.Do(req)
 		if err != nil {
 			return err
 		}
@@ -170,12 +224,12 @@ func (c *UploadTask) s3() error {
 		b.WriteString(`</ETag></Part>`)
 	}
 	b.WriteString(`</CompleteMultipartUpload>`)
-	req, err := http.NewRequest(http.MethodPost, c.Sess.CompleteURL, strings.NewReader(b.String()))
+	req, err := c.Site.newRequest(http.MethodPost, c.Sess.CompleteURL, strings.NewReader(b.String()), false)
 	if err != nil {
 		return err
 	}
 	req.Header.Set(`Content-Type`, `application/xhtml+xml`)
-	res, err := http.DefaultClient.Do(req)
+	res, err := Cr_Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -188,8 +242,8 @@ func (c *UploadTask) s3() error {
 	return c.Site.CallbackS3(c.Sess.SessionID)
 }
 
-// 执行上传 [上传目录] [错误]
-func (c *UploadTask) Do(dir string) error {
+// 创建任务(补全参数) [上传目录] [错误]
+func (c *UploadTask) In(dir string) error {
 	if c.Policy == nil {
 		list, err := c.Site.Directory(dir)
 		if err != nil {
@@ -211,7 +265,7 @@ func (c *UploadTask) Do(dir string) error {
 		}
 		if Cr_Debug {
 			s, _ := json.MarshalIndent(sreq, ``, `    `)
-			println(string(s))
+			Cr_Format(string(s))
 		}
 		sess, err := c.Site.FileUploadNew(sreq)
 		if err != nil {
@@ -219,12 +273,27 @@ func (c *UploadTask) Do(dir string) error {
 		}
 		if Cr_Debug {
 			s, _ := json.MarshalIndent(sess, ``, `    `)
-			println(string(s))
+			Cr_Format(string(s))
 		}
 		if sess.ChunkSize == 0 {
 			sess.ChunkSize = c.Size
 		}
 		c.Sess = sess
+	}
+	for total := c.Size; true; {
+		if total > c.Sess.ChunkSize {
+			c.Chunks = append(c.Chunks, c.Sess.ChunkSize)
+			total -= c.Sess.ChunkSize
+		} else {
+			c.Chunks = append(c.Chunks, total)
+			break
+		}
+	}
+	return nil
+}
+func (c *UploadTask) Go() error {
+	if c.Callback == nil {
+		c.Callback = func(chunk, n int, e error) {}
 	}
 	switch c.Policy.Type {
 	case `local`:
@@ -238,4 +307,12 @@ func (c *UploadTask) Do(dir string) error {
 	default:
 		return errors.New(`暂不支持当前存储策略类型: ` + c.Policy.Type)
 	}
+}
+
+// 执行上传 [上传目录] [错误]
+func (c *UploadTask) Do(dir string) error {
+	if err := c.In(dir); err != nil {
+		return err
+	}
+	return c.Go()
 }

@@ -10,8 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
-	"github.com/ZxwyWebSite/cr-go-sdk/pkg/json"
+	json "github.com/ZxwyProject/zson"
 	"github.com/ZxwyWebSite/cr-go-sdk/pkg/payment"
 	"github.com/ZxwyWebSite/cr-go-sdk/serializer"
 	"github.com/ZxwyWebSite/cr-go-sdk/service/aria2"
@@ -25,10 +26,40 @@ import (
 // 获取接口相对路径 [回调] [结果]
 func (c *SiteObj) api(f func(*strings.Builder)) string {
 	var b strings.Builder
+	/*if n != 0 {
+		b.Grow(len(c.Addr) + 7 + n)
+	}*/
 	b.WriteString(c.Addr)
 	b.WriteString(`api/v3/`)
 	f(&b)
 	return b.String()
+}
+
+// 创建网络请求 [方法,地址,数据,登录] [请求,错误]
+func (c *SiteObj) newRequest(method string, url string, body io.Reader, sess bool) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err == nil {
+		req.Header[`User-Agent`] = []string{Cr_UserAgent}
+		req.Header[`Accept`] = []string{Cr_Accept}
+		if sess {
+			if c.Users != nil {
+				if c.Users.Cookie != nil {
+					if c.Users.Cookie.RawExpires != `` {
+						if time.Now().Before(c.Users.Cookie.Expires) {
+							if c.Users.Cookie.Raw != `` {
+								req.Header[`Cookie`] = []string{c.Users.Cookie.Raw}
+								// Cr_Format(`[debug] rawcookie:`, c.Users.Cookie.Raw)
+							} else {
+								req.Header[`Cookie`] = []string{c.Users.Cookie.String()}
+								// Cr_Format(`[debug] addcookie:`, req.Header[`Cookie`][0])
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return req, err
 }
 
 // 发送网络请求 [方法,路径,参数,映射] [错误]
@@ -44,66 +75,32 @@ func (c *SiteObj) fetch(method string, uri func(b *strings.Builder), s any, out 
 		}
 		body = &buf
 	}
-	req, err := http.NewRequest(method, c.api(uri), body)
+	req, err := c.newRequest(method, c.api(uri), body, true)
 	if err != nil {
 		return err
 	}
-	req.Header[`User-Agent`] = []string{Cr_UserAgent}
-	req.Header[`Accept`] = []string{Cr_Accept}
 	if s != nil {
 		req.Header[`Content-Type`] = []string{`application/json`}
 	}
-	if c.Users != nil {
-		/*if c.Users.Sess != `` {
-			// if time.Now().Unix() < c.Users.Exps {
-			req.Header[`Cookie`] = []string{c.Users.Sess}
-			// }
-		}*/
-		if c.Users.Cookie != nil {
-			if c.Users.Cookie.RawExpires != `` {
-				if time.Now().Before(c.Users.Cookie.Expires) {
-					req.Header[`Cookie`] = []string{c.Users.Cookie.String()}
-				}
-			}
-		}
-	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Cr_Client.Do(req)
 	if err != nil {
 		return err
 	}
 	if c.Users != nil {
-		if sess := res.Cookies(); len(sess) >= 1 {
+		/*if sess := res.Cookies(); len(sess) >= 1 {
 			c.Users.Cookie = sess[0]
 			if Cr_Debug {
-				println(`[debug] sessupd:`, sess[0].String())
+				Cr_Format(`[debug] sessupd:`, sess[0].String())
 			}
-		}
-		/*sess := res.Cookies()
-		switch len(sess) {
-		case 0:
-			break
-		case 1:
-			c.Users.Cookie = sess[0]
-		default:
-			for _, s := range sess {
-				if s.Name == `cloudreve-session` {
-					c.Users.Cookie = s
-					break
-				}
-			}
-		}
+		}*/
 		for _, s := range res.Cookies() {
 			if s.Name == `cloudreve-session` {
 				c.Users.Cookie = s
-				println(`[debug] sessupd:`, s.String())
+				if Cr_Debug {
+					Cr_Format(`[debug] sessupd:`, s.String())
+				}
 			}
 		}
-		if sess, ok := res.Header[`Set-Cookie`]; ok {
-			if len(sess) != 0 {
-				c.Users.Sess = sess[0] //strings.Join(sess, `; `)
-				println(`[debug] sessupd:`, c.Users.Sess)
-			}
-		}*/
 	}
 	// 注：由于Golang泛型必须先初始化，而初始化后的类型又无法直接断言，故无法在此处检查返回状态码
 	// err: cannot use generic type serializer.Response[T any] without instantiation
@@ -317,27 +314,20 @@ func (c *SiteObj) UserAvatar(id, size string) string {
 
 // OneDrive文件上传完成 [会话id] [错误]
 func (c *SiteObj) CallbackOneDriveFinish(sid string) error {
-	var out serializer.Response[struct{}]
 	// inline
-	req, err := http.NewRequest(http.MethodPost, c.api(func(b *strings.Builder) {
+	req, err := c.newRequest(http.MethodPost, c.api(func(b *strings.Builder) {
 		b.WriteString(`callback/onedrive/finish/`)
 		b.WriteString(sid)
-	}), strings.NewReader(`{}`))
+	}), strings.NewReader(`{}`), true)
 	if err != nil {
 		return err
 	}
-	req.Header[`User-Agent`] = []string{Cr_UserAgent}
-	req.Header[`Accept`] = []string{Cr_Accept}
 	req.Header[`Content-Type`] = []string{`application/x-www-form-urlencoded`}
-	req.Header[`Content-Length`] = []string{`2`}
-	req.Header[`Cookie`] = []string{c.Users.Cookie.String()}
-	/*if time.Now().Unix() < c.Users.Exps {
-		req.Header[`Cookie`] = []string{c.Users.Sess}
-	}*/
-	res, err := http.DefaultClient.Do(req)
+	res, err := Cr_Client.Do(req)
 	if err != nil {
 		return err
 	}
+	var out serializer.Response[struct{}]
 	if err = json.NewDecoder(res.Body).Decode(&out); err == nil {
 		err = out.Err()
 	}
@@ -367,7 +357,7 @@ func (c *SiteObj) ShareInfo(id, password string) (*serializer.Share, error) {
 		b.WriteString(id)
 		if password != `` {
 			b.WriteString(`?password=`)
-			b.WriteString(password)
+			b.WriteString(url.QueryEscape(password))
 		}
 	}, nil, &out)
 	return out.Data, err
@@ -375,58 +365,75 @@ func (c *SiteObj) ShareInfo(id, password string) (*serializer.Share, error) {
 
 // 创建文件下载会话 [分享id,文件路径] [下载链接,错误]
 func (c *SiteObj) ShareDownload(id, path string) (*string, error) {
-	var b strings.Builder
-	b.WriteString(`share/download/`)
-	b.WriteString(id)
-	if path != `` {
-		b.WriteString(`?path=`)
-		b.WriteString(path)
-	} else {
-		return nil, errors.New(`path cannot be empty`)
-	}
 	var out serializer.Response[*string]
-	err := c.fetch(http.MethodPut, func(s *strings.Builder) { s.WriteString(b.String()) }, nil, &out)
+	err := c.fetch(http.MethodPut, func(b *strings.Builder) {
+		b.WriteString(`share/download/`)
+		b.WriteString(id)
+		if path != `` {
+			b.WriteString(`?path=`)
+			b.WriteString(url.QueryEscape(path))
+		}
+	}, nil, &out)
+	if err == nil {
+		// 兼容 v3.8.0 破坏性变更 本机存储路径拼接
+		if (*out.Data)[0] == '/' {
+			*out.Data = c.Addr + (*out.Data)[1:]
+		}
+	}
 	return out.Data, err
 }
 
-// 预览分享文件 [分享id] [重定向链接]
-func (c *SiteObj) SharePreview(id string) string {
+// 预览分享文件 [分享id,文件路径] [重定向链接(需携带Cookie访问)]
+func (c *SiteObj) SharePreview(id, path string) string {
 	return c.api(func(b *strings.Builder) {
 		b.WriteString(`share/preview/`)
 		b.WriteString(id)
+		if path != `` {
+			b.WriteString(`?path=`)
+			b.WriteString(url.QueryEscape(path))
+		}
 	})
 }
 
-// 取得Office文档预览地址 [分享id,文件路径] [预览链接,错误]
+// 取得Office文档预览地址 [分享id,文件路径] [预览会话,错误]
 func (c *SiteObj) ShareDoc(id, path string) (*serializer.DocPreviewSession, error) {
-	var b strings.Builder
-	b.WriteString(`share/doc/`)
-	b.WriteString(id)
-	if path != `` {
-		b.WriteString(`?path=`)
-		b.WriteString(path)
-	} else {
-		return nil, errors.New(`path cannot be empty`)
-	}
 	var out serializer.Response[*serializer.DocPreviewSession]
-	err := c.fetch(http.MethodGet, func(s *strings.Builder) { s.WriteString(b.String()) }, nil, &out)
+	err := c.fetch(http.MethodGet, func(b *strings.Builder) {
+		b.WriteString(`share/doc/`)
+		b.WriteString(id)
+		if path != `` {
+			b.WriteString(`?path=`)
+			b.WriteString(url.QueryEscape(path))
+		}
+	}, nil, &out)
 	return out.Data, err
 }
 
 // 获取文本文件内容 [分享id,文件路径] [重定向链接,错误]
 func (c *SiteObj) ShareContent(id, path string) (string, error) {
-	var b strings.Builder
-	b.WriteString(c.Addr)
-	b.WriteString(`api/v3/`)
-	b.WriteString(`share/content/`)
-	b.WriteString(id)
-	if path != `` {
-		b.WriteString(`?path=`)
-		b.WriteString(path)
-	} else {
-		return ``, errors.New(`path cannot be empty`)
+	// inline
+	req, err := c.newRequest(http.MethodGet, c.api(func(b *strings.Builder) {
+		b.WriteString(`share/content/`)
+		b.WriteString(id)
+		if path != `` {
+			b.WriteString(`?path=`)
+			b.WriteString(url.QueryEscape(path))
+		}
+	}), nil, true)
+	if err != nil {
+		return ``, err
 	}
-	return b.String(), nil
+	res, err := Cr_Client.Do(req)
+	if err != nil {
+		return ``, err
+	}
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		res.Body.Close()
+		return ``, err
+	}
+	res.Body.Close()
+	return unsafe.String(unsafe.SliceData(data), len(data)), nil
 }
 
 // 分享目录列文件 [分享id,文件路径] [目录列表,错误]
@@ -704,29 +711,23 @@ func (c *SiteObj) UserSetting2FA() (*string, error) {
 
 // 文件上传 (本地) [会话id,分片数,文件,大小,类型] [错误]
 func (c *SiteObj) FileUploadPut(sid string, index int, file io.Reader, size uint64, mime string) error {
-	var b strings.Builder
-	b.WriteString(c.Addr)
-	b.WriteString(`api/v3/`)
-	b.WriteString(`file/upload/`)
-	b.WriteString(sid)
-	b.WriteByte('/')
-	b.WriteString(strconv.Itoa(index))
-	var out serializer.Response[struct{}]
 	// inline
-	req, err := http.NewRequest(http.MethodPost, b.String(), file)
+	req, err := c.newRequest(http.MethodPost, c.api(func(b *strings.Builder) {
+		b.WriteString(`file/upload/`)
+		b.WriteString(sid)
+		b.WriteByte('/')
+		b.WriteString(strconv.Itoa(index))
+	}), file, true)
 	if err != nil {
 		return err
 	}
-	req.Header[`User-Agent`] = []string{Cr_UserAgent}
-	req.ContentLength = int64(size)
-	// req.Header[`Content-Length`] = []string{strconv.FormatUint(size, 10)}
+	req.ContentLength = int64(size) // req.Header[`Content-Length`] = []string{strconv.FormatUint(size, 10)}
 	req.Header[`Content-Type`] = []string{mime}
-	// req.Header.Set(`Cookie`, c.Users.Sess)
-	req.Header[`Cookie`] = []string{c.Users.Cookie.String()}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Cr_Client.Do(req)
 	if err != nil {
 		return err
 	}
+	var out serializer.Response[struct{}]
 	if err = json.NewDecoder(res.Body).Decode(&out); err == nil {
 		err = out.Err()
 	}
@@ -801,6 +802,12 @@ func (c *SiteObj) FileDownload(id string) (*string, error) {
 		b.WriteString(`file/download/`)
 		b.WriteString(id)
 	}, nil, &out)
+	if err == nil {
+		// 兼容 v3.8.0 破坏性变更 本机存储路径拼接
+		if (*out.Data)[0] == '/' {
+			*out.Data = c.Addr + (*out.Data)[1:]
+		}
+	}
 	return out.Data, err
 }
 

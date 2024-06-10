@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	stdpath "path"
@@ -11,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	json "github.com/ZxwyProject/zson"
 	"github.com/ZxwyWebSite/cr-go-sdk"
-	"github.com/ZxwyWebSite/cr-go-sdk/pkg/json"
 	"github.com/ZxwyWebSite/cr-go-sdk/service/explorer"
 	"github.com/pterm/pterm"
 )
@@ -233,11 +235,7 @@ var cmds = map[string]func(args ...string) error{
 		if err != nil {
 			return err
 		}
-		if (*link)[0] == '/' {
-			println(site.Addr + (*link)[1:])
-		} else {
-			println(*link)
-		}
+		println(*link)
 		return nil
 	},
 	// 获取直链
@@ -325,7 +323,74 @@ var cmds = map[string]func(args ...string) error{
 		if err != nil {
 			return err
 		}
-		err = site.SdkUpload(args[1], file, name)
+
+		// err = site.SdkUpload(args[1], file, name)
+		err = func() error {
+			info, err := file.Stat()
+			if err != nil {
+				return err
+			}
+			size := uint64(info.Size())
+			if name == `` {
+				name = info.Name()
+			}
+			mbuf := make([]byte, 512)
+			mn, err := file.Read(mbuf)
+			if err != nil {
+				return err
+			}
+			mime := http.DetectContentType(mbuf[:mn])
+			_, err = file.Seek(0, io.SeekStart)
+			if err != nil {
+				return err
+			}
+			task := &cr.UploadTask{
+				Site:    site,
+				File:    file,
+				Size:    size,
+				Name:    name,
+				Mime:    mime,
+				ModTime: info.ModTime().UnixMilli(),
+			}
+			err = task.In(args[1])
+			if err != nil {
+				return err
+			}
+			pterm.DefaultBasicText.Printfln(
+				"创建上传会话: %v, 分片: %v, 大小: %v",
+				task.Sess.SessionID,
+				len(task.Chunks),
+				cr.SizeToString(task.Size),
+			)
+			multi := pterm.DefaultMultiPrinter //.WithUpdateDelay(time.Millisecond * 100)
+			//.WithBarCharacter(`▬`).WithLastCharacter(`▬`).WithBarFiller(pterm.Gray(`▬`))
+			chunks := make([]*pterm.ProgressbarPrinter, len(task.Chunks))
+			for c, s := range task.Chunks {
+				pb, _ := pterm.DefaultProgressbar.WithWriter(multi.NewWriter()).WithTotal(int(s)).Start(strconv.Itoa(c))
+				chunks[c] = pb
+			}
+			multi.Start()
+			task.Callback = func(c, n int, e error) {
+				if e != nil && e != io.EOF {
+					chunks[c].Stop()
+					pterm.Error.Printfln(`Chunk%v: %v`, c, e)
+				} else {
+					chunks[c].Add(n)
+				}
+			}
+			err = task.Go()
+			/*for _, v := range chunks {
+				v.Stop()
+			}*/
+			multi.Stop()
+			if err != nil {
+				println(`Error!`)
+			} else {
+				println(`Success!`)
+			}
+			return err
+		}()
+
 		file.Close()
 		return err
 	},
@@ -342,6 +407,27 @@ var cmds = map[string]func(args ...string) error{
 			cr.SizeToString(us.Total),
 		)
 		return err
+	},
+	// 删除文件
+	`rm`: func(args ...string) error {
+		length := len(args)
+		if length == 0 {
+			println(`usage:`, `rm <type> <id...>`)
+			return nil
+		}
+		if length < 2 {
+			return errors.New(`参数不足`)
+		}
+		err := site.ObjectDel(cr.GenerateSrc(args[0] == `dir`, args[1:]...))
+		if err != nil {
+			return err
+		}
+		println(`Success!`)
+		return nil
+	},
+	// 退出登录
+	`logout`: func(args ...string) error {
+		return site.UserSessionDel()
 	},
 }
 
@@ -402,6 +488,16 @@ func main() {
 		if err := site.SdkInit(); err != nil {
 			println(err.Error())
 			os.Exit(0)
+		}
+		if site.Users != nil {
+			if site.Users.Cookie == nil {
+				if err := site.SdkLogin(); err != nil {
+					println(err.Error())
+				}
+			}
+			if site.Config.User.Anonymous {
+				println(`当前正在以游客身份登录`)
+			}
 		}
 	}
 	// 列出指令
